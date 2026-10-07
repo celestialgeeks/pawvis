@@ -144,7 +144,10 @@ Mouse**.
 - **Reach adapts to distance.** Auto mode sizes the tracking area from how big
   your hand looks, so the whole screen stays reachable up close *and* far away
   with your fingers staying inside the camera frame. Manual mode gives you a
-  fixed area and a slider.
+  fixed area and a slider. If crossing the screen still sends your hand out of
+  the camera's view, **Settings → General → Cursor travel** shortens the sweep:
+  the cursor covers more of the screen for the same hand movement, in either
+  mode.
 
 The on-screen claw is your cursor: open while pointing, retracted and purple
 while the left button is held, blue for the right button, pink for the middle

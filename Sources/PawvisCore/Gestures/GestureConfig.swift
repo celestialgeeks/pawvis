@@ -212,6 +212,19 @@ public struct GestureConfig: Codable, Equatable, Sendable {
     /// Whether the engine sizes the box to the hand it can see (`.auto`) or
     /// uses `interactionBox` verbatim (`.manual`).
     public var reachMode: ReachMode = .auto
+    /// Cursor travel per unit of hand travel — the Cursor travel slider, and
+    /// the one reach dial that works in *both* reach modes. 1.0 is the box as
+    /// auto fits it or as the slider makes it; 2.5 maps the same hand sweep to
+    /// two and a half times the cursor distance, by shrinking the box to two
+    /// fifths of its size about its own centre. The reason it exists: a wide
+    /// box means crossing the screen can take more travel than the camera
+    /// frame physically has, and the hand leaves the view reaching an edge.
+    /// Floored at 1.0 on purpose — below it the box would grow past the
+    /// camera frame's edges and the screen edges would go unreachable.
+    public var cursorGain: Double = 1.0
+    /// The Cursor travel slider's range; the tolerant decoder clamps stored
+    /// values into it, same rule as `scrollGainRange`.
+    public static let cursorGainRange: ClosedRange<Double> = 1.0...2.5
     public var mirrorCamera: Bool = true
 
     public init() {}
@@ -230,7 +243,7 @@ public struct GestureConfig: Codable, Equatable, Sendable {
         case dragStartDelay, dragIntentDistance, jitterDeadband
         case pointerSource, smoothing, poseThresholds
         case minHandConfidence, minJointConfidence, trackingLossGrace
-        case interactionBox, reachMode, mirrorCamera
+        case interactionBox, cursorGain, reachMode, mirrorCamera
     }
 
     /// Field-tolerant decoding: unknown/missing/mistyped fields (including
@@ -351,6 +364,13 @@ public struct GestureConfig: Codable, Equatable, Sendable {
             trackingLossGrace = v.clamped(to: 0...5)
         }
         if let v = try? c.decodeIfPresent(InteractionBox.self, forKey: .interactionBox) { interactionBox = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .cursorGain) {
+            // Settings → General → "Cursor travel" slider (`range: 1.0...2.5`).
+            // The lower bound is the load-bearing half: a gain below 1 would
+            // *grow* the box past the camera frame, so no hand position could
+            // ever map to the far edge of the screen.
+            cursorGain = v.clamped(to: Self.cursorGainRange)
+        }
         if let v = try? c.decodeIfPresent(ReachMode.self, forKey: .reachMode) { reachMode = v }
         if let v = try? c.decodeIfPresent(Bool.self, forKey: .mirrorCamera) { mirrorCamera = v }
     }

@@ -110,4 +110,49 @@ final class CoordinateMapperTests: XCTestCase {
         // Camera x=0.8 → mirrored 0.2 → box left edge → screen 0.
         XCTAssertEqual(m.map(Vec2(0.8, 0.5)).x, 0, accuracy: 1e-9)
     }
+
+    // MARK: Cursor travel (the box scaled about its own centre)
+
+    func testScalingByOneReturnsTheBoxBitForBit() {
+        // Manual reach calls this every frame at the dial's default, so the
+        // identity has to be exact, not merely close — an epsilon here would
+        // re-map the cursor each frame and make a still hand shimmer.
+        let box = InteractionBox(xMin: 0.2, xMax: 0.8, yMin: 0.2525, yMax: 0.875)
+        XCTAssertEqual(box.scaledAboutCentre(by: 1), box)
+    }
+
+    func testScalingHalvesBothHalfExtentsAndKeepsAnOffCentreBoxsShape() {
+        // A box like the one auto reach fits a close hand: centred sideways at
+        // 0.5 but sitting low vertically, with headroom for the fingers above
+        // it. Tightening it must shrink it around *its own* centre, not drag
+        // it toward the middle of the frame.
+        let box = InteractionBox(xMin: 0.218, xMax: 0.782, yMin: 0.428, yMax: 0.81)
+        let tight = box.scaledAboutCentre(by: 0.5)
+        XCTAssertEqual(tight.xMin, 0.359, accuracy: 1e-9)
+        XCTAssertEqual(tight.xMax, 0.641, accuracy: 1e-9)
+        XCTAssertEqual(tight.yMin, 0.5235, accuracy: 1e-9)
+        XCTAssertEqual(tight.yMax, 0.7145, accuracy: 1e-9)
+        XCTAssertEqual((tight.yMin + tight.yMax) / 2, (box.yMin + box.yMax) / 2, accuracy: 1e-9,
+                       "the vertical centre stays where the fingers need it")
+    }
+
+    func testExtremeScalingStopsAtTheMinimumHalfExtentAndStillMaps() {
+        let box = InteractionBox(xMin: 0.2, xMax: 0.8, yMin: 0.4, yMax: 0.6)
+        let tight = box.scaledAboutCentre(by: 0.01)
+        XCTAssertEqual(tight.xMin, 0.45, accuracy: 1e-9, "floored at minHalfExtent")
+        XCTAssertEqual(tight.xMax, 0.55, accuracy: 1e-9)
+        XCTAssertEqual(tight.yMin, 0.45, accuracy: 1e-9)
+        XCTAssertEqual(tight.yMax, 0.55, accuracy: 1e-9)
+        XCTAssertGreaterThan(tight.xMax, tight.xMin, "the box never crosses itself")
+
+        // A crossed or degenerate box would fall through to CoordinateMapper's
+        // 1e-6 guard and turn the cursor into a two-position switch; the floor
+        // keeps the mapping finite and monotonic instead.
+        let m = CoordinateMapper(box: tight, mirrored: false)
+        let left = m.map(Vec2(0.46, 0.48), clamped: false)
+        let right = m.map(Vec2(0.54, 0.52), clamped: false)
+        XCTAssertGreaterThan(right.x, left.x)
+        XCTAssertGreaterThan(right.y, left.y)
+        XCTAssertTrue([left.x, left.y, right.x, right.y].allSatisfy { $0.isFinite })
+    }
 }

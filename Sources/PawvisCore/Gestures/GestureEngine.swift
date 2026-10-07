@@ -29,7 +29,8 @@ import Foundation
 ///
 /// Input hands are in **camera space**: normalized [0,1], x right, y down,
 /// unmirrored. The engine mirrors, maps through the interaction box (sized to
-/// the hand itself when `reachMode` is `.auto`), and smooths (One Euro per
+/// the hand itself when `reachMode` is `.auto`, and tightened about its own
+/// centre by `cursorGain` in either mode), and smooths (One Euro per
 /// joint, sporecaster-style slot tracking with stale reset) before running
 /// gesture logic in screen-normalized space.
 public final class GestureEngine {
@@ -129,6 +130,7 @@ public final class GestureEngine {
         self.slots = [HandSlot(id: 0, params: config.smoothing),
                       HandSlot(id: 1, params: config.smoothing)]
         self.effectiveInteractionBox = config.interactionBox
+            .scaledAboutCentre(by: Self.tightness(forCursorGain: config.cursorGain))
         self.armed = config.controlTrigger == .anyHand
     }
 
@@ -310,7 +312,8 @@ public final class GestureEngine {
     /// seen (and again once one is truly gone).
     private(set) var smoothedHandScale: Double?
     /// The box actually used for mapping: `config.interactionBox` in `.manual`,
-    /// a hand-sized box drifting toward its target in `.auto`.
+    /// a hand-sized box drifting toward its target in `.auto` — either one
+    /// tightened about its own centre by the Cursor travel dial.
     private(set) var effectiveInteractionBox: InteractionBox
     /// Events produced outside `process` (a mid-session settings change),
     /// flushed ahead of the next frame's.
@@ -1274,26 +1277,37 @@ public final class GestureEngine {
     /// that size wants. `rawHand` is camera-space and unsmoothed — it has to
     /// be, or the measurement would be scaled by the very box it feeds.
     private func updateReach(rawHand: Hand) {
+        // The Cursor travel dial: the box *is* the travel control, so a gain
+        // of 2 halves it and maps the same hand sweep to twice the cursor
+        // distance.
+        let tightness = Self.tightness(forCursorGain: config.cursorGain)
         if let scale = rawScale(of: rawHand) {
             smoothedHandScale = smoothedHandScale.map {
                 $0 + (scale - $0) * Self.handScaleAlpha
             } ?? scale // seed on the first sight of a hand, don't ramp up from zero
         }
+        // Never mid-press, and never mid-scroll — in *either* reach mode. The
+        // box is a coordinate transform, so moving it under a held button
+        // would slide whatever is being dragged (this is what makes the Cursor
+        // travel slider safe to drag while the other hand is working); and
+        // scroll deltas are measured from the very pointer this box maps (see
+        // `pointerPoint`), so a box drifting under an active scroll remaps a
+        // motionless palm to a moving y and scrolls on its own (measured: a
+        // hand-scale ramp of 0.15→0.30 under a fixed palm emitted ~0.19
+        // screen-normalized units of phantom scroll before this guard
+        // existed). Released, either way, the box takes the change on the next
+        // frame — and because the freeze covers both paths below, this needs
+        // no matching branch in `config`'s `didSet`.
+        guard press == nil, !scroll.active else { return }
         guard config.reachMode == .auto else {
-            effectiveInteractionBox = config.interactionBox // manual: verbatim, at once
+            effectiveInteractionBox = config.interactionBox.scaledAboutCentre(by: tightness)
             return
         }
-        // Never mid-press, and never mid-scroll: the box is a coordinate
-        // transform, so moving it under a held button would slide whatever
-        // is being dragged — and scroll deltas are measured from the very
-        // pointer this box maps (see `pointerPoint`), so a box drifting
-        // under an active scroll remaps a motionless palm to a moving y and
-        // scrolls on its own (measured: a hand-scale ramp of 0.15→0.30 under
-        // a fixed palm emitted ~0.19 screen-normalized units of phantom
-        // scroll before this guard existed). Released, either way, the
-        // drift picks back up.
-        guard press == nil, !scroll.active, let scale = smoothedHandScale else { return }
-        let target = Self.targetBox(forHandScale: scale)
+        guard let scale = smoothedHandScale else { return }
+        // The dial turns the *target*, never the box already in use, so a
+        // slider change arrives through the same gentle drift as leaning
+        // closer to the camera.
+        let target = Self.targetBox(forHandScale: scale).scaledAboutCentre(by: tightness)
         func drift(_ edge: Double, toward goal: Double) -> Double {
             edge + (goal - edge) * Self.reachLerp
         }
@@ -1302,6 +1316,19 @@ public final class GestureEngine {
             xMax: drift(effectiveInteractionBox.xMax, toward: target.xMax),
             yMin: drift(effectiveInteractionBox.yMin, toward: target.yMin),
             yMax: drift(effectiveInteractionBox.yMax, toward: target.yMax))
+    }
+
+    /// The Cursor travel dial expressed as the factor a box is tightened by:
+    /// 2× the cursor distance per hand movement is half the box. The one place
+    /// `cursorGain` becomes geometry — `init` seeds the box with it (so the
+    /// first frame of a session already honors the dial) and `updateReach`
+    /// fits every later frame with it.
+    ///
+    /// Floored at 1.0 rather than trusting the decoder: a gain below 1 would
+    /// *grow* the box past the camera frame, putting the screen's far edges
+    /// out of any hand's physical reach — the opposite of what the dial is for.
+    static func tightness(forCursorGain gain: Double) -> Double {
+        1.0 / max(gain, 1)
     }
 
     /// The box a hand of this raw camera-space scale wants. A close (big) hand

@@ -394,6 +394,31 @@ final class GestureEngineTests: XCTestCase {
         XCTAssertEqual(inRange.crissCrossDisableCrossings, 3, "in-range values decode untouched")
     }
 
+    func testCursorGainClampsToTheTravelSlider() throws {
+        // The upper bound is the range's own ceiling — past it the cursor
+        // becomes a twitch. The lower one is the load-bearing half: a gain
+        // under 1 would *grow* the box past the camera frame, so no hand
+        // position anywhere in the view would map to the far edge of the
+        // screen. That is the failure the slider exists to remove, so it must
+        // not be able to cause its inverse.
+        let hot = try JSONDecoder().decode(
+            GestureConfig.self, from: Data(#"{"cursorGain":9.0}"#.utf8))
+        XCTAssertEqual(hot.cursorGain, GestureConfig.cursorGainRange.upperBound, accuracy: 1e-9)
+
+        let under = try JSONDecoder().decode(
+            GestureConfig.self, from: Data(#"{"cursorGain":0.2}"#.utf8))
+        XCTAssertEqual(under.cursorGain, 1.0, accuracy: 1e-9,
+                       "never below the identity mapping")
+
+        // 1.0 is the identity, so an install that never touched the dial keeps
+        // the exact mapping — and the exact box numbers — it has today.
+        XCTAssertEqual(GestureConfig.default.cursorGain, 1.0, accuracy: 1e-9)
+
+        let inRange = try JSONDecoder().decode(
+            GestureConfig.self, from: Data(#"{"cursorGain":1.75}"#.utf8))
+        XCTAssertEqual(inRange.cursorGain, 1.75, accuracy: 1e-9, "in-range values decode untouched")
+    }
+
     func testClickTimingFieldsClampToSaneRanges() throws {
         let bogus = try JSONDecoder().decode(
             GestureConfig.self, from: Data("""
@@ -2378,5 +2403,146 @@ final class GestureEngineTests: XCTestCase {
             [SyntheticHand.openRelaxed(wrist: Vec2(0.5, box.yMin + scale / 2), scale: scale)], at: 5.0)
         XCTAssertEqual(overlay.cursor!.y, 0, accuracy: 1e-6,
                        "…which the unadapted identity box would have mapped to 0.43")
+    }
+
+    // MARK: - Cursor travel
+
+    /// Auto reach with the Cursor travel dial dialled to `gain`.
+    private func useAutoReach(gain: Double) {
+        var config = Self.testConfig()
+        config.reachMode = .auto
+        config.cursorGain = gain
+        engine = GestureEngine(config: config)
+    }
+
+    /// The dial at its default must change nothing at all: every other
+    /// reach test in this suite pins the fitted box's exact numbers, and an
+    /// install that never touched the slider keeps the mapping it has today.
+    func testCursorGainAtItsDefaultLeavesTheFittedBoxAlone() {
+        useAutoReach(gain: 1)
+        feedFrames([SyntheticHand.openRelaxed(wrist: Vec2(0.5, 0.8), scale: 0.15)], from: 0, count: 300)
+        let fitted = GestureEngine.targetBox(forHandScale: 0.15)
+        let box = engine.effectiveInteractionBox
+        XCTAssertEqual(box.xMin, fitted.xMin, accuracy: 1e-6)
+        XCTAssertEqual(box.xMax, fitted.xMax, accuracy: 1e-6)
+        XCTAssertEqual(box.yMin, fitted.yMin, accuracy: 1e-6)
+        XCTAssertEqual(box.yMax, fitted.yMax, accuracy: 1e-6)
+    }
+
+    func testCursorGainShrinksTheAutoBoxAboutItsOwnCentre() {
+        // Twice the cursor distance for the same hand sweep is half the box —
+        // and it tightens around the box the fit produced, keeping the low
+        // vertical centre that leaves headroom for the fingers.
+        useAutoReach(gain: 2)
+        feedFrames([SyntheticHand.openRelaxed(wrist: Vec2(0.5, 0.8), scale: 0.15)], from: 0, count: 300)
+        let wanted = GestureEngine.targetBox(forHandScale: 0.15).scaledAboutCentre(by: 0.5)
+        let box = engine.effectiveInteractionBox
+        XCTAssertEqual(box.xMin, wanted.xMin, accuracy: 1e-6)
+        XCTAssertEqual(box.xMax, wanted.xMax, accuracy: 1e-6)
+        XCTAssertEqual(box.yMin, wanted.yMin, accuracy: 1e-6)
+        XCTAssertEqual(box.yMax, wanted.yMax, accuracy: 1e-6)
+        XCTAssertLessThan(box.yMin, 0.5, "…still low in the frame, not dragged to its middle")
+    }
+
+    /// The reported failure, and the dial's whole point: crossing the screen
+    /// can take more hand travel than the camera view physically has, so the
+    /// hand leaves the frame reaching an edge and tracking stops.
+    func testCursorGainBringsTheScreenEdgesInsideTheCameraFrame() {
+        /// Sweep the palm across two camera positions and report the cursor's
+        /// x each time. Manual mode so the box is a known quantity: the one
+        /// auto reach fits a typical laptop-webcam hand, 0.14…0.86 sideways.
+        /// The palm pointer is the wrist↔middleMCP midpoint, level with the
+        /// wrist sideways, so `wrist.x` is the pointer's camera x.
+        func cursorXs(gain: Double) -> [Double] {
+            var config = Self.testConfig()
+            config.interactionBox = InteractionBox(xMin: 0.14, xMax: 0.86, yMin: 0.2525, yMax: 0.875)
+            config.reachMode = .manual
+            config.cursorGain = gain
+            engine = GestureEngine(config: config)
+            var xs: [Double] = []
+            for (i, x) in [0.20, 0.80].enumerated() {
+                let events = feed([SyntheticHand.openRelaxed(wrist: Vec2(x, 0.72), scale: 0.15)],
+                                  at: Double(i) / 30)
+                xs += moves(events).map(\.x)
+            }
+            return xs
+        }
+
+        let plain = cursorXs(gain: 1)
+        XCTAssertEqual(plain.count, 2)
+        XCTAssertEqual(plain[0], 0.083, accuracy: 0.01,
+                       "a sweep from 0.2 to 0.8 of the view stops 8% short of the left edge…")
+        XCTAssertEqual(plain[1], 0.917, accuracy: 0.01,
+                       "…and the same short of the right: those edges live outside the frame")
+
+        let dialled = cursorXs(gain: 2.5)
+        XCTAssertEqual(dialled.count, 2)
+        XCTAssertEqual(dialled[0], 0, accuracy: 1e-9,
+                       "dialled up, the same sweep is already past the left edge…")
+        XCTAssertEqual(dialled[1], 1, accuracy: 1e-9,
+                       "…and past the right — the whole screen from the middle of the view")
+    }
+
+    func testManualBoxAndCursorGainNeverMoveMidPress() {
+        // AGENTS.md's rule: the interaction box is a coordinate transform, so
+        // it can never change mid-press. Auto reach has always honored that;
+        // the manual path assigned `config.interactionBox` in *front* of the
+        // freeze, so dragging the Manual reach or Cursor travel slider while
+        // the other hand held a button slid whatever was being dragged. The
+        // sliders are live, so the freeze now covers both modes.
+        var config = Self.testConfig()
+        config.reachMode = .manual
+        engine = GestureEngine(config: config)
+
+        let wrist = Vec2(0.5, 0.7)
+        feedFrames([SyntheticHand.mouseTap(indexDown: false, wrist: wrist)], from: 0, count: 3)
+        feedFrames([SyntheticHand.mouseTap(indexDown: true, wrist: wrist)], from: 0.1, count: 3)
+        let frozen = engine.effectiveInteractionBox
+
+        // A settings change with a button held: no `didSet` branch fires (the
+        // fields touched are box-only), and the box must not budge.
+        var moved = config
+        moved.interactionBox = InteractionBox(xMin: 0.25, xMax: 0.75, yMin: 0.3, yMax: 0.7)
+        moved.cursorGain = 2.5
+        engine.config = moved
+        feedFrames([SyntheticHand.mouseTap(indexDown: true, wrist: wrist)], from: 0.25, count: 60)
+        XCTAssertEqual(engine.effectiveInteractionBox, frozen,
+                       "a box change under a held button remaps the cursor mid-drag")
+
+        // Released, the dial arrives at once — manual still applies verbatim.
+        feedFrames([SyntheticHand.mouseTap(indexDown: false, wrist: wrist)], from: 2.5, count: 3)
+        let wanted = moved.interactionBox.scaledAboutCentre(by: 0.4)
+        XCTAssertEqual(engine.effectiveInteractionBox.xMin, wanted.xMin, accuracy: 1e-9)
+        XCTAssertEqual(engine.effectiveInteractionBox.yMax, wanted.yMax, accuracy: 1e-9)
+    }
+
+    func testCursorGainNeverMovesTheAutoBoxMidScroll() {
+        // Scroll deltas are measured from the pointer this box maps, so the
+        // dial is subject to the same freeze as the fit itself — a slider
+        // change mid-scroll would scroll on its own under a still palm.
+        useAutoReach(gain: 1)
+        let palm = Vec2(0.5, 0.5)
+        let wrist = wristPinningPalm(to: palm, scale: 0.15)
+        feedFrames([SyntheticHand.scrollPose(wrist: wrist, scale: 0.15)], from: 0, count: 4)
+        XCTAssertTrue(feed([SyntheticHand.scrollPose(wrist: wrist, scale: 0.15)],
+                           at: 0.2).overlay.isScrolling, "setup check: engaged before the dial turns")
+        let boxAtEngage = engine.effectiveInteractionBox
+
+        var config = engine.config
+        config.cursorGain = 2.5
+        engine.config = config
+        var deltas: [Double] = []
+        for i in 1...30 {
+            deltas += scrolls(feed([SyntheticHand.scrollPose(wrist: wrist, scale: 0.15)],
+                                   at: 0.2 + Double(i) / 30).events)
+        }
+        XCTAssertTrue(deltas.isEmpty, "a palm that never moved must not scroll because the dial did")
+        XCTAssertEqual(engine.effectiveInteractionBox, boxAtEngage,
+                       "…and the box stays put under an active scroll")
+
+        // Released, the tightened box arrives.
+        feedFrames([SyntheticHand.openRelaxed(wrist: palm, scale: 0.15)], from: 1.4, count: 3)
+        XCTAssertNotEqual(engine.effectiveInteractionBox, boxAtEngage,
+                          "once the scroll ends the dial takes effect")
     }
 }

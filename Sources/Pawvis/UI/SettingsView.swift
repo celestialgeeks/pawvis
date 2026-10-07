@@ -274,7 +274,7 @@ private struct GeneralSettingsTab: View {
 
             LabeledSlider(
                 label: "Manual reach",
-                caption: "How much of the camera view maps to the whole screen. Higher = smaller hand movements.",
+                caption: "How much of the camera view maps to the whole screen. Lower = the cursor crosses the screen with a smaller hand movement; higher = more of the view is used, which is steadier.",
                 value: Binding(
                     get: { 0.5 - store.settings.gestures.interactionBox.xMin },
                     set: { reach in
@@ -285,6 +285,12 @@ private struct GeneralSettingsTab: View {
                     }),
                 range: 0.2...0.45)
                 .disabled(store.settings.gestures.reachMode == .auto)
+
+            LabeledSlider(
+                label: "Cursor travel",
+                caption: "How far the cursor goes for a given hand movement. Right: the screen is crossed with a much shorter sweep — use this if your hand runs out of the camera's view reaching the edges. Left (default): the whole camera view is used, which is steadier. Works in either Reach mode above; higher travel amplifies every bit of hand wobble too, so pair it with Responsiveness toward the left, and keep your hand nearer the middle of the view.",
+                value: $store.settings.gestures.cursorGain,
+                range: GestureConfig.cursorGainRange)
 
             SettingToggle(
                 title: "Mirror camera",

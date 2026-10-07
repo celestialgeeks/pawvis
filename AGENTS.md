@@ -462,7 +462,29 @@ Hard-won constraints, each of which broke something real:
   is still down. `MouseController` posts through a serial pacing queue —
   don't bypass it.
 - **The interaction box is a coordinate transform**, so it can never change
-  mid-press (auto-reach freezes while a button is held).
+  mid-press — and the freeze (`GestureEngine.updateReach`) covers *both* reach
+  modes, auto's drift and manual's verbatim assignment. Manual used to assign
+  in front of the guard, which read as harmless because nothing usually moves
+  the box while a button is down; the Settings → General sliders do, live, from
+  the other hand, and a box change under a held button slides whatever is being
+  dragged. Because the freeze covers it, `config`'s `didSet` needs no branch for
+  box fields, and releasing is what applies the change.
+- **The box is also the cursor's travel dial.** `cursorGain`
+  (Settings → General → Cursor travel, default 1.0, range 1.0…2.5) tightens the
+  box about its *own* centre in either mode — `InteractionBox.scaledAboutCentre`
+  — so the cursor crosses the screen with a shorter hand sweep. It exists
+  because crossing the screen at the default mapping can take more travel than
+  the camera frame physically has: the hand leaves the view reaching an edge and
+  tracking stops. Auto reach cannot answer that (it sizes the box for the
+  *hand*, not the user) and the Manual reach slider is disabled in `.auto`, the
+  shipped default — the dial is the only control that works in both modes. The
+  gain is floored at 1.0 on purpose: below it the box grows *past* the frame and
+  puts the screen's edges out of any hand's reach, the exact failure it exists
+  to remove. `scaledAboutCentre(by: 1)` must return the box bit-for-bit (manual
+  re-derives every frame; an epsilon would shimmer a still cursor), which is why
+  the default changes nothing in the existing box tests. High gain amplifies
+  hand wobble too — that is the `Responsiveness` slider's job, not a reason to
+  cap the range lower.
 
 ## The gesture set (and how to grow it)
 

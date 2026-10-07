@@ -17,6 +17,32 @@ public struct InteractionBox: Codable, Equatable, Sendable {
     }
 
     public static let `default` = InteractionBox()
+
+    /// Smallest half-extent a scaled box may keep on either axis. A box that
+    /// crosses itself would fall through to `CoordinateMapper`'s 1e-6 guard
+    /// and turn the cursor into a two-position switch, so the tightest mapping
+    /// stays a usable 0.1 band of the camera view.
+    public static let minHalfExtent: Double = 0.05
+
+    /// The box with its half-extents multiplied by `factor` about its **own**
+    /// centre, so an off-centre box (the auto-reach one is deliberately low,
+    /// to leave headroom for the fingers) keeps its shape and only tightens.
+    /// This is how the Cursor travel dial shortens a hand sweep: `factor` is
+    /// `1 / cursorGain`, and every joint, overlay dot and the pointer keep
+    /// sharing the one transform, because the change is in the box itself.
+    public func scaledAboutCentre(by factor: Double) -> InteractionBox {
+        // The dial's default is 1.0 and that path must hand back the box
+        // bit-for-bit: manual reach runs this every frame, so a few parts in
+        // 1e-16 of rounding drift here would re-map the cursor on every frame
+        // of a session (and take `ReachMode.manual`'s "verbatim, never
+        // drifts" contract with it).
+        guard factor != 1 else { return self }
+        let cx = (xMin + xMax) / 2
+        let cy = (yMin + yMax) / 2
+        let hx = max((xMax - xMin) / 2 * factor, Self.minHalfExtent)
+        let hy = max((yMax - yMin) / 2 * factor, Self.minHalfExtent)
+        return InteractionBox(xMin: cx - hx, xMax: cx + hx, yMin: cy - hy, yMax: cy + hy)
+    }
 }
 
 /// Maps camera-normalized landmark positions (x right, y down, unmirrored) to
